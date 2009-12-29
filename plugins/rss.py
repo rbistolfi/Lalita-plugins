@@ -9,12 +9,15 @@ __version__ = '0.1'
 __license__ = 'GPLv3'
 
 
-from lalita import Plugin
-import feedparser
 import urllib2
 import sqlite3
+import feedparser
+from sqlite3 import IntegrityError
+from lalita import Plugin
+from md5 import md5
 
 
+#TODO
 TRANSLATION_TABLE = {}
 
 
@@ -29,9 +32,19 @@ class Rss(Plugin):
         self.register(self.events.COMMAND, self.rss_add, ['rss_add'])
         self.register(self.events.COMMAND, self.rss_delete, ['rss_del'])
         self.register(self.events.COMMAND, self.rss_list, ['rss_list'])
-        
+        self.register(self.events.COMMAND, self.announce, ['announce'])
+      
+        #TODO? replace multiple rss commands with a dispatch
+        # Ej: @rss_del would be replaced by @rss del
+        self.subcommands = {
+                'add': self.rss_add,
+                'del': self.rss_delete,
+                'list': self.rss_list,
+                'announce': self.announce }
+
+        #TODO: get data from config file
         #config
-        self.max = 10
+        self.max = 3
         self.tinyurl = True
        
         #db connection
@@ -74,17 +87,19 @@ class Rss(Plugin):
         u'''@rss_add <alias> <url>. Adds a RSS feed to the database. <alias> is
         a single word that can be used as a shortcut for the url with the @rss
         command.'''
+
+        #from pudb import set_trace; set_trace()
         try:
             alias, url = args
         except ValueError:
             self.say(channel, 'Usage: @rss_add <alias> <url>')
-        self._add_rss(channel, alias, url)
-        self.logger.debug(self.cursor.execute('select * from feeds').fetchall())
+        self._add_rss(alias, url, channel)
 
     def rss_delete(self, user, channel, command, *args):
         '''@rss_del <alias>. Removes the feed referenced by <alias> from the
         database.'''
         
+        #from pudb import set_trace; set_trace()
         if len(args) != 1:
             self.say(channel, '%s: Usage: @rss_del <alias>' % (user,))
             return
@@ -92,20 +107,46 @@ class Rss(Plugin):
 
     def rss_list(self, user, channel, command, *args):
         u'''Returns a list of registered RSS feeds.'''
-        from pudb import set_trace; set_trace()
 
+        #from pudb import set_trace; set_trace()
         self.cursor.execute('SELECT alias, url FROM feeds')
         for feed in self.cursor.fetchall():
             self.say(channel, '%s: %s, %s' % (user, feed[0], feed[1]))
+
+    def announce(self, user, channel, command, *args):
+        u'''@announce. Shows unread RSS entries.'''
+
+        #from pudb import set_trace; set_trace()
+
+        #get registered feeds for the current channel
+        self.cursor.execute('SELECT rowid, url, channel FROM feeds ' \
+                'WHERE channel == ?', (channel,))
+
+        #for each url, announce entries that are not in the "entries"
+        #table, those have been announced already
+        for rowid, url, channel in self.cursor.fetchall():
+            for item in self._get_items(url):
+                hash = md5()
+                hash.update(''.join(item))
+                try:
+                    self.cursor.execute("INSERT INTO entries VALUES(?, ?)",
+                            (rowid, hash.hexdigest()))
+                    self.conn.commit()
+                    text = "News from %s: " % self.feed_title + ": ".join(item) 
+                    self.say(str(channel), text)
+                except IntegrityError:
+                    self.logger.debug("Skiping %s, already announced." %
+                            (item,))
 
     ##
     ## Database
     ##
 
-    def _add_rss(self, alias, url):
+    def _add_rss(self, alias, url, channel):
         '''Adds a new entry into the rss database.'''
 
-        self.cursor.execute("INSERT INTO feeds VALUES(?, ?, ?)", (channel, alias, url))
+        self.cursor.execute("INSERT INTO feeds(channel, alias, url) "\
+                "VALUES(?, ?, ?)", (channel, alias, url))
         self.conn.commit()
 
     def _del_rss(self, alias):
@@ -122,7 +163,7 @@ class Rss(Plugin):
 
         self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS entries
-                (feed TEXT, hash TEXT, title TEXT, url TEXT)''')
+                (feed TEXT, hash TEXT UNIQUE)''')
         self.conn.commit()
 
     ##
