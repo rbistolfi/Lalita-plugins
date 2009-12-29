@@ -67,7 +67,7 @@ class Rss(Plugin):
             if arg.startswith('http://') or arg.startswith('https://'):
                 for item in self._get_items(arg):
                     self.logger.debug(item)
-                    text = "News from %s: " % self.feed_title + ": ".join(item) 
+                    text = "News from %s: " % self.feed_title + " || ".join(item) 
                     self.say(channel, text)
             
             # we asume arg is an alias
@@ -80,7 +80,7 @@ class Rss(Plugin):
                     self.say(channel, '%s: Feed is not registered.' % user)
                 for item in self._get_items(url):
                     self.logger.debug(item)
-                    text = "News from %s: " % self.feed_title + ": ".join(item) 
+                    text = "News from %s: " % self.feed_title + " || ".join(item) 
                     self.say(channel, text)
 
     def rss_add(self, user, channel, command, *args):
@@ -116,7 +116,7 @@ class Rss(Plugin):
     def announce(self, user, channel, command, *args):
         u'''@announce. Shows unread RSS entries.'''
 
-        #from pudb import set_trace; set_trace()
+        from pudb import set_trace; set_trace()
 
         #get registered feeds for the current channel
         self.cursor.execute('SELECT rowid, url, channel FROM feeds ' \
@@ -126,13 +126,12 @@ class Rss(Plugin):
         #table, those have been announced already
         for rowid, url, channel in self.cursor.fetchall():
             for item in self._get_items(url):
-                hash = md5()
-                hash.update(''.join(item))
+                dash = md5(''.join(item).encode("utf8"))
                 try:
                     self.cursor.execute("INSERT INTO entries VALUES(?, ?)",
-                            (rowid, hash.hexdigest()))
+                            (rowid, dash.hexdigest()))
                     self.conn.commit()
-                    text = "News from %s: " % self.feed_title + ": ".join(item) 
+                    text = "News from %s: " % self.feed_title + " || ".join(item) 
                     self.say(str(channel), text)
                 except IntegrityError:
                     self.logger.debug("Skiping %s, already announced." %
