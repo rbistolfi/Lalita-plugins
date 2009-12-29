@@ -125,6 +125,9 @@ class Rss(Plugin):
         #for each url, announce entries that are not in the "entries"
         #table, those have been announced already
         for rowid, url, channel in self.cursor.fetchall():
+            #twisted complains if this is unicode
+            channel = str(channel) 
+            
             for item in self._get_items(url):
                 dash = md5(''.join(item).encode("utf8"))
                 try:
@@ -132,7 +135,7 @@ class Rss(Plugin):
                             (rowid, dash.hexdigest()))
                     self.conn.commit()
                     text = "News from %s: " % self.feed_title + " || ".join(item) 
-                    self.say(str(channel), text)
+                    self.say(channel, text)
                 except IntegrityError:
                     self.logger.debug("Skiping %s, already announced." %
                             (item,))
