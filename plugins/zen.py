@@ -4,15 +4,23 @@
 # License: GPL v3
 # For further info, see LICENSE file
 
+u'''The Zen of Python by Tim Peters for the Lalita IRC bot.'''
+
+__author__ = "rbistolfi" # The body of the zen function belongs to Tim
+__date__ = "12/18/2009"
+__version__ = "0.1"
+
+
 from lalita import Plugin
 from this import *
 from random import randint
+
 
 TRANSLATION_TABLE = {}
 
 
 class Zen(Plugin):
-    u'''Rss reader for lalita'''
+    u'''The Zen of Python'''
 
     def init(self, config):
         self.register_translation(self, TRANSLATION_TABLE)
