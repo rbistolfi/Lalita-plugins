@@ -10,11 +10,17 @@ __license__ = 'GPLv3'
 
 
 import urllib2
-import sqlite3
 import feedparser
+import sqlite3
 from sqlite3 import IntegrityError
-from lalita import Plugin
 from md5 import md5
+
+from twisted.internet import task
+
+try:
+    from lalita import Plugin
+except ImportError:
+    from core import Plugin
 
 
 #TODO
@@ -34,30 +40,37 @@ class Rss(Plugin):
         self.register(self.events.COMMAND, self.rss_list, ['rss_list'])
         self.register(self.events.COMMAND, self.announce, ['announce'])
       
-        #TODO? replace multiple rss commands with a dispatch
-        # Ej: @rss_del would be replaced by @rss del
+        # TODO? replace multiple rss commands with a dispatch
+        # Ex: @rss_del would be replaced by @rss del
         self.subcommands = {
                 'add': self.rss_add,
                 'del': self.rss_delete,
-                'list': self.rss_list,
-                'announce': self.announce }
+                'list': self.rss_list, }
 
-        #TODO: get data from config file
-        #config
-        self.max = 3
+        # TODO: get data from config file
+        # config
+        self.max = 20
         self.tinyurl = True
        
-        #db connection
+        # db connection
         self.conn = sqlite3.connect('db/rss.db')
         self.cursor = self.conn.cursor()
         self._init_db()
 
+        # schedule announces
+        # this does not work atm
+        announce = task.LoopingCall(self.announce, "lalita", "#lalita", \
+                u"announce", None)
+        announce.start(300.0, now=False) # call every 5 mins
+        
     ##
     ## Commands
     ##
 
+    # TODO: Move sql stuff into their own methods to the database section
+
     def rss(self, user, channel, command, *args):
-        '''@rss [url|alias]. Read RSS from url or from a registered feed unedr
+        u'''@rss [url|alias]. Read RSS from url or from a registered feed unedr
         the given alias. See @rss_add.'''
 
         #from pudb import set_trace; set_trace()
@@ -67,7 +80,8 @@ class Rss(Plugin):
             if arg.startswith('http://') or arg.startswith('https://'):
                 for item in self._get_items(arg):
                     self.logger.debug(item)
-                    text = "News from %s: " % self.feed_title + " || ".join(item) 
+                    text = "News from %s: " % self.feed_title + \
+                            " || ".join(item) 
                     self.say(channel, text)
             
             # we asume arg is an alias
@@ -80,7 +94,8 @@ class Rss(Plugin):
                     self.say(channel, '%s: Feed is not registered.' % user)
                 for item in self._get_items(url):
                     self.logger.debug(item)
-                    text = "News from %s: " % self.feed_title + " || ".join(item) 
+                    text = "News from %s: " % self.feed_title + \
+                            " || ".join(item) 
                     self.say(channel, text)
 
     def rss_add(self, user, channel, command, *args):
@@ -116,17 +131,17 @@ class Rss(Plugin):
     def announce(self, user, channel, command, *args):
         u'''@announce. Shows unread RSS entries.'''
 
-        from pudb import set_trace; set_trace()
+        #from pudb import set_trace; set_trace()
 
-        #get registered feeds for the current channel
-        self.cursor.execute('SELECT rowid, url, channel FROM feeds ' \
-                'WHERE channel == ?', (channel,))
+        # get registered feeds for the current channel
+        self.cursor.execute('SELECT rowid, url, channel FROM feeds')
 
-        #for each url, announce entries that are not in the "entries"
-        #table, those have been announced already
+        # for each url, announce entries that are not in the "entries"
+        # table, those have been announced already
         for rowid, url, channel in self.cursor.fetchall():
-            #twisted complains if this is unicode
-            channel = str(channel) 
+            self.logger.info("Looking for news in %s." % (url,))
+            # twisted complains if this is unicode
+            channel = str(channel)
             
             for item in self._get_items(url):
                 dash = md5(''.join(item).encode("utf8"))
@@ -134,7 +149,10 @@ class Rss(Plugin):
                     self.cursor.execute("INSERT INTO entries VALUES(?, ?)",
                             (rowid, dash.hexdigest()))
                     self.conn.commit()
-                    text = "News from %s: " % self.feed_title + " || ".join(item) 
+                    text = "News from %s: " % self.feed_title + \
+                            " || ".join(item) 
+                    self.logger.debug([text, self, user, channel, command,
+                        args])
                     self.say(channel, text)
                 except IntegrityError:
                     self.logger.debug("Skiping %s, already announced." %
@@ -178,17 +196,19 @@ class Rss(Plugin):
         if tinyurl is None:
             tinyurl = self.tinyurl
 
+        # TODO: handle the various RSS (non)standards
         # feed data
         feed = feedparser.parse(url)
-        self.feed_title = feed['feed']['title']
-        
+        self.feed_title = feed['feed'].get('title', None)
+       
         # items
         for entry in feed['entries'][:self.max]:
             if tinyurl:
                 link = self._tinyurl(entry['link'])
             else:
                 link = entry['link']
-            yield entry['title'], link
+                title = entry.get('title', None)
+            yield title, link
 
     ##
     ## Helpers
