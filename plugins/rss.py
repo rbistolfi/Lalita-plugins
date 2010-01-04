@@ -207,7 +207,7 @@ class Rss(Plugin):
                 link = self._tinyurl(entry['link'])
             else:
                 link = entry['link']
-                title = entry.get('title', None)
+            title = entry.get('title', None)
             yield title, link
 
     ##
