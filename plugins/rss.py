@@ -2,6 +2,8 @@
 
 u'''A RSS reader for the Lalita IRC bot.'''
 
+from __future__ import with_statement
+
 __author__ = 'rbistolfi'
 __date__ = '12/28/2009'
 __mail__ = 'moc.liamg@iflotsibr'[::-1]
@@ -12,261 +14,405 @@ __license__ = 'GPLv3'
 import urllib2
 import feedparser
 import sqlite3
-from sqlite3 import IntegrityError
-from md5 import md5
-import simplejson as json
 
 from twisted.web import client
-from twisted.internet import task, defer, reactor, threads
+from twisted.internet import task, defer, reactor
 
-try:
-    from lalita import Plugin
-except ImportError:
-    from core import Plugin
+from lalita import Plugin
 
-
-#TODO
+TIMEOUT = 30
 TRANSLATION_TABLE = {}
 
-
 class Rss(Plugin):
-    u'''Rss reader for lalita.'''
+    u"""A RSS reader for Lalita."""
 
     def init(self, config):
-        u'''Plugin initialization'''
-
+        """Plugin intitalization."""
+        
         self.register_translation(self, TRANSLATION_TABLE)
         self.register(self.events.COMMAND, self.rss, ['rss'])
-        self.register(self.events.COMMAND, self.rss_add, ['rss_add'])
-        self.register(self.events.COMMAND, self.rss_delete, ['rss_del'])
-        self.register(self.events.COMMAND, self.rss_list, ['rss_list'])
-        #self.register(self.events.COMMAND, self.announce, ['announce'])
       
-        # TODO? replace multiple rss commands with a dispatch
-        # Ex: @rss_del would be replaced by @rss del
-        self.subcommands = {
-                'add': self.rss_add,
-                'del': self.rss_delete,
-                'list': self.rss_list, }
+        # dispatch for rss subcommands
+        self.dispatch = {
+                'add': self.add,
+                'del': self.delete,
+                'list': self.list, }
 
         self.messages = []
 
         # TODO: get data from config file
         # config
         self.max = 3
-        self.tinyurl = True
-       
-        # db connection
-        self.conn = sqlite3.connect('db/rss.db')
-        self.cursor = self.conn.cursor()
-        self._init_db()
+        self.use_tinyurl = True # set it to True for blocking the process ;)
 
-        # schedule announces
-        # this does not work atm
+        # database
+        self.db = RssDatabase('db/rss.db')
+        self.db.init_db()
+        
+        # announce schedule
+        feeds = self.db.get_feeds()
+        self.to_announce = [ (channel, alias, RSSConditionalGetter(url,
+            self.logger)) for channel, alias, url in feeds ]
         announce = task.LoopingCall(self.announce)
-        announce.start(300.0, now=False) # call every 5 mins
+        announce.start(600.0, now=False) # call every X seconds
+
+    ##
+    ## Comands
+    ##
+
+    def rss(self, user, channel, command, *args):
+        u"""@rss [url|alias|list|add|del]: Reads RSS entries from <url> or 
+        <alias>. <alias> is a RSS feed registered with the add command. 
+        @rss list: List the registered feeds. @rss add <alias> <url>: 
+        register <url> with <alias>. @rss del <alias>: removes <alias> from 
+        the database."""
+
+        usage = u'Usage: @rss [url|alias|list|add|del]'
+
+        if not args:
+            self.say(channel, u'%s: %s', user, usage)
+            return 0
         
-    ##
-    ## Commands
-    ##
+        # arg is a command - dispatch
+        if args[0] in self.dispatch:
+            self.dispatch.get(args[0])(user, channel, command, *args)
+            return 1
+        # arg is an url
+        elif args[0].startswith("http"):
+            url = args[0]        
+        # arg is an alias
+        else:
+            alias = args[0]
+            try:
+                url = self.db.get_feed_byalias(alias, channel)
+            except TypeError, e:
+                self.say(channel, u"%s: '%s' is not a registered feed", user,
+                        alias)
 
-    # TODO: Move sql stuff into their own methods to the database section
-    
-    def rss(self, user, channel, commands, *args):
-        u'''@rss [url|alias]. Read RSS from url or from a registered feed unedr
-        the given alias. See @rss_add.'''
- 
-        # find url
-        url = self._get_url(args[0])
-        d = threads.deferToThread(self._rss_handler, user, channel, url)
-        d.addCallback(self._rss_callback)
-        return d
+        format = "%s || %s"
 
-    def rss_add(self, user, channel, command, *args):
-        u'''@rss_add <alias> <url>. Adds a RSS feed to the database. <alias> is
-        a single word that can be used as a shortcut for the url with the @rss
-        command.'''
+        deferred = self.get(url)
+        deferred.addCallback(self.feed_parser)
+        deferred.addErrback(self.feed_parser_error, user, channel)
+        #deferred.addCallbacks(self.tinyurl)
+        deferred.addCallback(self.say_feed, format, user, channel, command, *args)
+        return deferred
+        
+    def add(self, user, channel, command, *args):
+        """Add a RSS url to the database under certain alias."""
+        
+        usage = u"Usage: @rss add <alias> <url>"
 
-        #from pudb import set_trace; set_trace()
         try:
-            alias, url = args
+            alias, url = args[1:]
         except ValueError:
-            self.say(channel, u'Usage: @rss_add <alias> <url>')
-        self._add_rss(alias, url, channel)
+            self.say(channel, u'%s: %s', user, usage)
+            return 0
 
-    def rss_delete(self, user, channel, command, *args):
-        '''@rss_del <alias>. Removes the feed referenced by <alias> from the
-        database.'''
+        if not url.startswith(u'http'):
+            self.say(channel, u'%s: Second argument should be an url.', 
+                    user)
+        else:
+            self.db.add_feed(channel, alias, url)
+            self.to_announce.append(RSSConditionalGetter(url, self.logger))
+            self.say(channel, u'%s: RSS feed added to the database.', user)
+
+    def delete(self, user, channel, command, *args):
+        """Remove a RSS from the database."""
         
-        #from pudb import set_trace; set_trace()
-        if len(args) != 1:
-            self.say(channel, u'%s: Usage: @rss_del <alias>', user)
-            return
-        self._del_rss(args[0])
+        usage = u"Usage: @rss del <alias>"
 
-    def rss_list(self, user, channel, command, *args):
-        u'''Returns a list of registered RSS feeds.'''
+        try:
+            alias = args[1]
+        except IndexError:
+            self.say(channel, u'%s: %s', user, usage)
+        self.logger.debug("Deleting RSS feed %s", alias)
+        self.db.delete_feed(alias)
+        self.say(channel, '%s: %s removed from te database', user, alias)
 
-        #from pudb import set_trace; set_trace()
-        self.cursor.execute('SELECT alias, url FROM feeds')
-        for feed in self.cursor.fetchall():
-            self.say(channel, '%s: %s, %s', user, feed[0], feed[1])
+    def list(self, user, channel, command, *args):
+        """List the registered feeds."""
+        
+        usage = u"Usage: @rss list"
+    
+        rss_list = self.db.get_feeds_bychannel(channel)
+        self.logger.debug(rss_list)
+
+        for feed in rss_list:
+            alias, url = feed
+            self.say(channel, "%s: %s", alias, url)
+
+    ##
+    ## Non interactive announce
+    ##
 
     def announce(self):
-        u'''@announce. Shows unread RSS entries.'''
-
-        #from pudb import set_trace; set_trace()
-        # get registered feeds for the current channel
-        self.cursor.execute('SELECT rowid, url, channel FROM feeds')
-
-        # for each url, announce entries that are not in the "entries"
-        # table, those have been announced already
-        for rowid, url, channel in self.cursor.fetchall():
-            self.logger.info("Looking for news in %s." % (url,))
-            # twisted complains if this is unicode
+        """Announce news in registered feeds."""
+        self.logger.debug(self.to_announce)
+        for channel, alias, instance in self.to_announce:
+            self.logger.info("Looking for news in %s" % alias)
             channel = str(channel)
-            
-            for item in self._get_items(url):
-                self.logger.info(item)
-                try:
-                    dash = hash(''.join(item))
-                except TypeError:
-                    pass
-                try:
-                    self.cursor.execute("INSERT INTO entries VALUES(?, ?)",
-                            (rowid, dash))
-                    self.conn.commit()
-                    text = "News from %s: " % self.feed_title + \
-                            " || ".join(item) 
-                    self.say(channel, text)
-                except IntegrityError:
-                    self.logger.debug("Skiping %s, already announced." %
-                            (item,))
+            alias = str(alias)
+            format = "News from " + alias + ": %s || %s" 
 
+            deferred = instance.get_rss()
+            deferred.addCallback(self.feed_parser)
+            deferred.addErrback(self.feed_parser_error, None, channel)
+            #deferred.addCallbacks(self.tinyurl) # this blocks the process :(
+            deferred.addCallback(self.say_feed, format, "amalia", channel, None)
+            deferred.addErrback(self.logger.debug)
+            #return deferred
+    
     ##
-    ## Rss
+    ## RSS callback chain
     ##
 
-    ## Get rss ##
+    def get(self, url):
+        """Get the contents of url."""
+        return client.getPage(str(url))
 
-    def _get_items(self, url, tinyurl=None):
-        '''Gets RSS feed from url and yields a tuple containing the title and
-        link for each RSS entry. If the keyword argument tinyurl is True, links
-        will be processed through the tinyurl api to get a short url.'''
+    def conditional_get(self, url):
+        """Get the contents of url only if contents changed since last visit."""
+        pass
+
+    def feed_parser(self, feed):
+        """Parse RSS feed."""
+        fp = feedparser.parse(feed)
+        entries = []
+        for i in fp.get('entries'):
+            title = i.get('title')
+            url = i.get('link')
+            entries.append((title, url))
+        return entries
+
+    def feed_parser_error(self, error, user, channel, *args):
+        """Error callback for feed_parser."""
+        self.logger.error("Error parsing rss feed: %s", error)
+        self.say(channel, '%s: Error parsing RSS feed', user)
+
+    def say_feed(self, messages, format, user, channel, command, *args):
+        """Say message in channel to user."""
+        for title, url in messages:
+            self.say(channel, unicode(format), title, url)
+
+    ##
+    ## tinyurl
+    ##
+
+    def tinyurl(self, data):
+        '''Returns a tinyurl from url.'''
+        d = defer.Deferred()
+        shortened = []
+        for title, link in data:
+            url = urllib2.urlopen( \
+                    "http://tinyurl.com/api-create.php?url=%s" %
+                    str(link)).read()
+            shortened.append((title, url))
+            #url.addCallback(self.append_tinyurl, title, shortened)
+            #url.addErrback(self.append_tinyurl, link, title, shortened)
+        d.callback(shortened)
+        return d
+
+    def append_tinyurl(instance, url, title, data_container):
+        '''Append data containing a tinyurl to a list.'''
+        instance.logger.debug("Building tinyurl %s for %s" % (url, title))
+        data_container.append((title, url))
+
+
+class SQLiteConnection(object):
+    """A connection handler SQLite database."""
+
+    def __init__(self, dbfile):
+        """Initialize connection arguments."""
+        self.dbfile = dbfile
+        self.conn = None
+
+    def __enter__(self):
+        """Stablish the connection and return the database cursor."""
+        self.conn = sqlite3.connect(self.dbfile)
+        return self.conn.cursor()
+
+    def __exit__(self, *args):
+        """Close the connection after rollback unclean queries if any."""
         
-        if tinyurl is None:
-            tinyurl = self.tinyurl
-
-        # TODO: handle the various RSS (non)standards
-        # feed data
-        try:
-            feed = feedparser.parse(url)
-            self.feed_title = feed['feed'].get('title', url)
-       
-            # items
-            for entry in feed['entries']:
-                link = entry.get('link', u'No link')
-                title = entry.get('title', u'No title')
-                if tinyurl:
-                    if 'No link' not in link:
-                        link = self._biturl(link)
-                yield title, link
-        except Exception, e:
-            self.logger.error("Can't parse RSS feed: %s" % e)
-            pass
-
-    ## RSS command ##
-        
-    def _rss_callback(self, args):
-        '''Callback called when RSS entries retrieving is done.
-        args is the return value of the deferred thread (_rss_handler).'''
-
-        self.logger.debug("Executing RSS callback.")
-        user, channel, msgs = args
-        for msg in msgs:
-            self.say(channel, msg)
-
-    def _rss_handler(self, *args):
-        '''This method is ran in a deferred thread when the rss command is
-        called.'''
-
-        user, channel, url = args
-        messages = []
-        for item in self._get_items(url):
-            if item is not None:
-                self.logger.debug(item)
-                text = "News from %s: " % self.feed_title + \
-                        " || ".join(item) 
-                messages.append(text)
-            else:
-                messages.append("%s: Error parsing RSS feed." % user)
-        return user, channel, messages
-
-    def _get_url(self, arg):
-        '''Takes the argument passed to the rss command and queries the db for
-        getting an url if needed.'''
-
-        # arg is an url
-        if "http://" in arg or "https://" in arg:
-            return arg
-
-        # if it is not an url, we assume it is an alias
+        # if there is no TraceBack, we commit
+        if args[-1] is None:
+            self.conn.commit()
+        # if there is TraceBack, we better rollback
         else:
-            self.cursor.execute("SELECT url FROM feeds WHERE alias == ?",
-                    (arg,))
-            try:
-                url = self.cursor.fetchone()[0]
-                return url
-            except TypeError:
-                return None
+            self.conn.rollback()
+        self.conn.close()
 
-    ##
-    ## Database
-    ##
 
-    def _add_rss(self, alias, url, channel):
-        '''Adds a new entry into the rss database.'''
+class RssDatabase(object):
+    """A data handler for Lalita RSS plugin."""
 
-        self.cursor.execute("INSERT INTO feeds(channel, alias, url) "\
-                "VALUES(?, ?, ?)", (channel, alias, url))
-        self.conn.commit()
+    def __init__(self, dbfile):
+        """Connection initialization."""
+        self.dbfile = dbfile
 
-    def _del_rss(self, alias):
-        '''Removes a feed from the database'''
-
-        self.cursor.execute("DELETE FROM feeds WHERE alias == ?", (alias,))
-        self.conn.commit()
-
-    def _init_db(self):
-        '''Creates the rss database.'''
-        self.cursor.execute('''
+    def init_db(self):
+        """Creates a new database if it does not exist already."""
+        
+        with SQLiteConnection(self.dbfile) as db:
+            db.execute('''
                 CREATE TABLE IF NOT EXISTS feeds
                 (channel TEXT, alias TEXT, url TEXT)''')
 
-        self.cursor.execute('''
+            db.execute('''
                 CREATE TABLE IF NOT EXISTS entries
                 (feed TEXT, hash TEXT UNIQUE)''')
-        self.conn.commit()
 
-    ##
-    ## Helpers
-    ##
+    def add_feed(self, channel, alias, url):
+        """Insert a new feed in the database. The feed will be automatically
+        announced in the given channel by Lalita."""
+        
+        with SQLiteConnection(self.dbfile) as db:
+            db.execute("INSERT INTO feeds(channel, alias, url) " \
+                "VALUES(?, ?, ?)", (channel, alias, url))
 
-    def _tinyurl(self, url):
-        '''Returns a tinyurl from url.'''
-        try:
-            return urllib2.urlopen( \
-                    "http://tinyurl.com/api-create.php?url=%s" % url).read()
-        except Exception, e:
-            self.logger.debug("Error shortening url %s" % url)
-            return url
+    def delete_feed(self, alias):
+        """Removes the feed with the given alias from the database."""
+        
+        with SQLiteConnection(self.dbfile) as db:
+            db.execute("DELETE FROM feeds WHERE alias == ?", (alias,))
 
-    def _biturl(self, url):
-        data = urllib2.urlopen("http://api.bit.ly/shorten?version=2.0.1&" \
-                "longUrl=%s&login=rbistolfi&" \
-                "apiKey=R_6d75b2bcf16ae38c39c8ebbb89e2c152" % url).read()
-        try:
-            return json.loads(data)['results'][url]['shortUrl']
-        except Exception, e:
-            self.logger.debug("Error shortening %s" % url)
-            return url.replace("%", "%%")
+    def get_feed_byalias(self, alias, channel):
+        """Returns a RSS feed matching the given alias and channel."""
+        
+        with SQLiteConnection(self.dbfile) as db:
+            db.execute("SELECT url FROM feeds WHERE alias == ? AND \
+                    channel == ?", (alias, channel))
+            return db.fetchone()[0]
+
+    def get_feeds_bychannel(self, channel):
+        """Get all the registered RSS feeds for a given channel."""
+       
+        with SQLiteConnection(self.dbfile) as db:
+            db.execute('SELECT alias, url FROM feeds WHERE channel == ?',
+                    (channel,))
+            return db.fetchall()
+
+    def get_feeds(self):
+        """Get all the registered RSS feeds."""
+       
+        with SQLiteConnection(self.dbfile) as db:
+            db.execute('SELECT channel, alias, url FROM feeds')
+            return db.fetchall()
+
+    def add_entry(self, feed, entry_id):
+        """Adds a Rss entry to the database so Lalita can remember what has
+        been announced already. The column has the UNIQUE attribute, so this
+        will raise an IntegrityError if entry already exists. The entry_id
+        argument is whatever you consider to be a unique identifier for an Rss
+        entry"""
+        
+        with SQLiteConnection(self.dbfile) as db:
+            db.execute("INSERT INTO entries VALUES(?, ?)", (feed, entry_id))
+
+
+# This is shamelessly taken from the Twisted network programming essentials book
+class ConditionalGetClient(client.HTTPClientFactory):
+    """An HTTP client for RSSConditionalGetter."""
+    
+    def __init__(self, url, headers=None, postdata=None, 
+            agent="Twisted RSSConditionalGetter", timeout=TIMEOUT, cookies=None):
+        """Class initialization."""
+
+        client.HTTPClientFactory.__init__(self, url, headers=headers)
+        self.status = None
+        self.deferred.addCallback(
+                lambda data: (data, self.status, self.response_headers))
+
+    def noPage(self, reason):
+        """Overwrites superclass method for stop interpreting 304 response code
+        as an error."""
+
+        if self.status == '304':
+            client.HTTPClientFactory.page(self, '')
+        else:
+            client.HTTPClientFactory.noPage(self, reason)
+
+
+class RSSConditionalGetter(object):
+    """Performs a GET request only if there is updated content.
+    Stores the Last-Modified and ETag headers when receiving a RSS file and
+    uses them to check the If-Modified-Since and If-None-Match headers the next
+    time it visits the same feed. 
+    What you want is to run the get_rss method, it returns a deferred that you
+    can use for something else, like parsing the feed.
+   
+    >>> def parse(feed): print feedparser.parse(feed)['entries'][0]['title']
+    >>> def on_error(reason): print "Error parsing RSS feed: %s" % reason,
+    >>> url = "http://python-history.blogspot.com/feeds/posts/default?alt=rss"
+    >>> rss = RSSConditionalGetter(url)
+    >>> deferred = rss.get_rss()
+    >>> deferred.addCallback(parse)
+    >>> deferred.addErrback(on_error)
+    """
+
+    def __init__(self, url, logger=None):
+        """Class initializations."""
+        
+        self.url = str(url)
+        self.cache = {}
+        self.deferred = defer.succeed(url)
+        self.logger = logger
+        
+    def connect(self, contextFactory=None, headers=None, *args, **kwargs):
+        """Creates a connection with the host using the appropriate transport
+        and headers."""
+        url = self.url
+        self.logger.debug("Connecting to %s" % url)
+        headers = self.cache.get(url)
+        scheme, host, port, path = client._parse(url)
+ 
+        factory = ConditionalGetClient(url, headers=headers, *args, **kwargs)
+        if scheme == 'https':
+            from twisted.internet import ssl
+            if contextFactory is None:
+                contextFactory = ssl.ClientContextFactory()
+            reactor.connectSSL(host, port, factory, contextFactory)
+        else:
+            reactor.connectTCP(host, port, factory)
+        return factory.deferred
+
+    def request(self, result):
+        """Requests handler."""
+   
+        url = self.url
+        data, status, headers = result
+        headers = self.cache.get(url, headers)
+        
+        self.logger.debug("HEADERS: %s" % headers)
+        self.logger.debug("STATUS: %s" % status)
+        self.logger.debug("CACHE: %s" % self.cache.get(url))
+        
+        nextRequestHeaders = {}
+        eTag = headers.get("etag")
+        if eTag:
+            nextRequestHeaders['If-None-Match'] = eTag[0]
+        else:
+            nextRequestHeaders['If-None-Match'] = headers.get('If-None-Match')
+        
+        modified = headers.get('last-modified')
+        if modified:
+            nextRequestHeaders['If-Modified-Since'] = modified[0]
+        else:
+            nextRequestHeaders['If-Modified-Since'] = \
+                    headers.get('If-Modified-Since')
+        
+        self.cache[url] = nextRequestHeaders
+        self.logger.debug("NEXT HEADERS: %s" % nextRequestHeaders)
+        return data
+
+    def handleError(self, failure):
+        """Error handler triggered when response code is not 200 or 304."""
+        self.logger.debug("Error %s: " % failure.getErrorMessage())
+
+    def get_rss(self):
+        deferred = self.deferred
+        deferred.addCallback(self.connect)
+        deferred.addCallback(self.request)
+        deferred.addErrback(self.handleError)
+        return deferred
