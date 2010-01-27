@@ -13,6 +13,7 @@ __license__ = 'GPLv3'
 import urllib2
 import feedparser
 import sqlite3
+import md5
 from sqlite3 import IntegrityError
 
 from twisted.web import client
@@ -159,22 +160,19 @@ class Rss(Plugin):
             deferred.addCallback(self.feed_parser)
             deferred.addErrback(self.feed_parser_error, None, channel)
             #deferred.addCallbacks(self.tinyurl) # this blocks the process :(
-            deferred.addCallbacks(self.msg_filter)
+            deferred.addCallback(self.msg_filter, alias)
             deferred.addCallback(self.say_feed, format, None, channel, None)
             deferred.addErrback(self.logger.debug)
             #return
 
-    def msg_filter(instance, entries):
-        """Add RSS items to database"""
+    def msg_filter(instance, entries, feed_alias):
+        """Add announced RSS items to database and pass only what it is not
+        already there."""
         filtered = []
         for item in entries:
+            dash = md5.md5(''.join(repr(item))).hexdigest()
             try:
-                dash = hash(''.join(item))
-            except TypeError, e:
-                self.logger.debug("Error hashing %s: %s" % (item, e))
-                dash = repr(item)
-            try:
-                instance.db.add_entry(item[0], dash)
+                instance.db.add_entry(feed_alias, dash)
                 filtered.append(item)
             except IntegrityError:
                 instance.logger.debug("Skiping %s, already announced." %
