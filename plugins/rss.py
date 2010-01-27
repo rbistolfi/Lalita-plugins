@@ -13,6 +13,7 @@ __license__ = 'GPLv3'
 import urllib2
 import feedparser
 import sqlite3
+from sqlite3 import IntegrityError
 
 from twisted.web import client
 from twisted.internet import task, defer, reactor
@@ -53,7 +54,7 @@ class Rss(Plugin):
         self.to_announce = [ (channel, alias, RSSConditionalGetter(url,
             self.logger)) for channel, alias, url in feeds ]
         announce = task.LoopingCall(self.announce)
-        announce.start(600.0, now=False) # call every X seconds
+        announce.start(60.0, now=False) # call every X seconds
 
     ##
     ## Comands
@@ -158,10 +159,28 @@ class Rss(Plugin):
             deferred.addCallback(self.feed_parser)
             deferred.addErrback(self.feed_parser_error, None, channel)
             #deferred.addCallbacks(self.tinyurl) # this blocks the process :(
-            deferred.addCallback(self.say_feed, format, "amalia", channel, None)
+            deferred.addCallbacks(self.msg_filter)
+            deferred.addCallback(self.say_feed, format, None, channel, None)
             deferred.addErrback(self.logger.debug)
-            #return deferred
-    
+            #return
+
+    def msg_filter(instance, entries):
+        """Add RSS items to database"""
+        filtered = []
+        for item in entries:
+            try:
+                dash = hash(''.join(item))
+            except TypeError, e:
+                self.logger.debug("Error hashing %s: %s" % (item, e))
+                dash = repr(item)
+            try:
+                instance.db.add_entry(item[0], dash)
+                filtered.append(item)
+            except IntegrityError:
+                instance.logger.debug("Skiping %s, already announced." %
+                        (item,))
+        return filtered
+
     ##
     ## RSS callback chain
     ##
