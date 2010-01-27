@@ -2,14 +2,13 @@
 
 u'''A RSS reader for the Lalita IRC bot.'''
 
+#TODO: Remember what entries have been announced already
+
+
 from __future__ import with_statement
 
 __author__ = 'rbistolfi'
-__date__ = '12/28/2009'
-__mail__ = 'moc.liamg@iflotsibr'[::-1]
-__version__ = '0.1'
 __license__ = 'GPLv3'
-
 
 import urllib2
 import feedparser
@@ -382,28 +381,29 @@ class RSSConditionalGetter(object):
    
         url = self.url
         data, status, headers = result
-        headers = self.cache.get(url, headers)
-        
+
+        self.logger.debug("-"*40)
         self.logger.debug("HEADERS: %s" % headers)
-        self.logger.debug("STATUS: %s" % status)
+        self.logger.info("Status: %s => %s" % (url, status))
         self.logger.debug("CACHE: %s" % self.cache.get(url))
-        
+ 
         nextRequestHeaders = {}
         eTag = headers.get("etag")
         if eTag:
             nextRequestHeaders['If-None-Match'] = eTag[0]
         else:
             nextRequestHeaders['If-None-Match'] = headers.get('If-None-Match')
-        
+
         modified = headers.get('last-modified')
         if modified:
             nextRequestHeaders['If-Modified-Since'] = modified[0]
         else:
             nextRequestHeaders['If-Modified-Since'] = \
                     headers.get('If-Modified-Since')
-        
+
         self.cache[url] = nextRequestHeaders
         self.logger.debug("NEXT HEADERS: %s" % nextRequestHeaders)
+        self.logger.debug("-"*40)
         return data
 
     def handleError(self, failure):
