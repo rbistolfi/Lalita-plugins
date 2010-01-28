@@ -248,11 +248,13 @@ class SQLiteConnection(object):
 
     def __init__(self, dbfile):
         """Initialize connection arguments."""
+
         self.dbfile = dbfile
         self.conn = None
 
     def __enter__(self):
         """Stablish the connection and return the database cursor."""
+
         self.conn = sqlite3.connect(self.dbfile)
         return self.conn.cursor()
 
@@ -386,6 +388,7 @@ class RSSConditionalGetter(object):
     def connect(self, contextFactory=None, headers=None, *args, **kwargs):
         """Creates a connection with the host using the appropriate transport
         and headers."""
+
         url = self.url
         if self.logger:
             self.logger.debug("Connecting to %s" % url)
@@ -436,10 +439,13 @@ class RSSConditionalGetter(object):
 
     def handleError(self, failure):
         """Error handler triggered when response code is not 200 or 304."""
+
         if self.logger:
             self.logger.error("Error %s: " % failure.getErrorMessage())
 
     def get_rss(self):
+        """Callbacks chain for url downloading."""
+
         deferred = self.deferred
         deferred.addCallback(self.connect)
         deferred.addCallback(self.request)
