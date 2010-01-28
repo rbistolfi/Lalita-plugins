@@ -1,0 +1,41 @@
+A set of plugins for Lalita IRC bot
+===================================
+
+About Lalita
+============
+
+Lalita is an IRC bot written in python using the twisted framework. It is very
+easy to add features for Lalita, by using it's plug-in mechanism.
+
+
+RSS plugin
+==========
+
+This is a RSS reader for Lalita. It features conditional get (It only downloads
+a feed if it has changed since the last time it was visited) and commands for
+adding or deleting new feeds dynamically.
+
+RSS commands
+------------
+
+    * @rss [<alias>|<url>|add|del|list]
+    If argument is an alias, it returns the last rss entries for the associated
+    url. If argument is an url it returns it's last entries. The rest are
+    subcommands.
+
+    * @rss add <alias> <url>
+    Registers a feed under the given alias. Registered feeds can be referenced
+    by alias with the @rss command and will be automatically announced by the
+    bot when there are new items.
+
+    * @rss del <alias>
+    Unregisters the rss feed referenced by the given alias. This feed will be
+    removed from the database.
+
+    * @rss list
+    Returns the list of registered feeds.
+
+Weather Plugin
+==============
+
+TODO
