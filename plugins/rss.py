@@ -25,7 +25,7 @@ TIMEOUT = 30
 TRANSLATION_TABLE = {}
 
 class Rss(Plugin):
-    u"""A RSS reader for Lalita."""
+    """A RSS reader for Lalita."""
 
     def init(self, config):
         """Plugin intitalization."""
@@ -44,7 +44,7 @@ class Rss(Plugin):
         # TODO: get data from config file
         # config
         self.max = 3
-        self.use_tinyurl = True # set it to True for blocking the process ;)
+        self.use_tinyurl = False # set it to True for blocking the process ;)
 
         # database
         self.db = RssDatabase('db/rss.db')
@@ -95,7 +95,8 @@ class Rss(Plugin):
         deferred = self.get(url)
         deferred.addCallback(self.feed_parser)
         deferred.addErrback(self.feed_parser_error, user, channel)
-        #deferred.addCallbacks(self.tinyurl)
+        if self.use_tinyurl:
+            deferred.addCallbacks(self.tinyurl)
         deferred.addCallback(self.say_feed, format, user, channel, command, *args)
         return deferred
         
@@ -130,6 +131,9 @@ class Rss(Plugin):
             self.say(channel, u'%s: %s', user, usage)
         self.logger.debug("Deleting RSS feed %s", alias)
         self.db.delete_feed(alias)
+        for feed in self.to_announce:
+            if alias in feed:
+                self.to_announce.remove(feed)
         self.say(channel, '%s: %s removed from te database', user, alias)
 
     def list(self, user, channel, command, *args):
@@ -138,7 +142,6 @@ class Rss(Plugin):
         usage = u"Usage: @rss list"
     
         rss_list = self.db.get_feeds_bychannel(channel)
-        self.logger.debug(rss_list)
 
         for feed in rss_list:
             alias, url = feed
@@ -150,7 +153,7 @@ class Rss(Plugin):
 
     def announce(self):
         """Announce news in registered feeds."""
-        self.logger.debug(self.to_announce)
+
         for channel, alias, instance in self.to_announce:
             self.logger.info("Looking for news in %s" % alias)
             channel = str(channel)
@@ -160,7 +163,8 @@ class Rss(Plugin):
             deferred = instance.get_rss()
             deferred.addCallback(self.feed_parser)
             deferred.addErrback(self.feed_parser_error, None, channel)
-            #deferred.addCallbacks(self.tinyurl) # this blocks the process :(
+            if self.use_tinyurl:
+                deferred.addCallbacks(self.tinyurl)
             deferred.addCallback(self.msg_filter, alias)
             deferred.addCallback(self.say_feed, format, None, channel, None)
             deferred.addErrback(self.logger.debug)
@@ -169,6 +173,7 @@ class Rss(Plugin):
     def msg_filter(instance, entries, feed_alias):
         """Add announced RSS items to database and pass only what it is not
         already there."""
+
         filtered = []
         for item in entries:
             dash = md5.md5(''.join(repr(item))).hexdigest()
@@ -186,10 +191,12 @@ class Rss(Plugin):
 
     def get(self, url):
         """Get the contents of url."""
+        
         return client.getPage(str(url))
 
     def feed_parser(self, feed):
         """Parse RSS feed."""
+        
         fp = feedparser.parse(feed)
         entries = []
         for i in fp.get('entries'):
@@ -200,11 +207,13 @@ class Rss(Plugin):
 
     def feed_parser_error(self, error, user, channel, *args):
         """Error callback for feed_parser."""
+        
         self.logger.error("Error parsing rss feed: %s", error)
         self.say(channel, '%s: Error parsing RSS feed', user)
 
     def say_feed(self, messages, format, user, channel, command, *args):
         """Say message in channel to user."""
+
         for title, url in messages:
             self.say(channel, unicode(format), title, url)
 
@@ -214,6 +223,7 @@ class Rss(Plugin):
 
     def tinyurl(self, data):
         '''Returns a tinyurl from url.'''
+
         d = defer.Deferred()
         shortened = []
         for title, link in data:
@@ -228,6 +238,7 @@ class Rss(Plugin):
 
     def append_tinyurl(instance, url, title, data_container):
         '''Append data containing a tinyurl to a list.'''
+        
         instance.logger.debug("Building tinyurl %s for %s" % (url, title))
         data_container.append((title, url))
 
@@ -376,7 +387,8 @@ class RSSConditionalGetter(object):
         """Creates a connection with the host using the appropriate transport
         and headers."""
         url = self.url
-        self.logger.debug("Connecting to %s" % url)
+        if self.logger:
+            self.logger.debug("Connecting to %s" % url)
         headers = self.cache.get(url)
         scheme, host, port, path = client._parse(url)
  
@@ -396,10 +408,11 @@ class RSSConditionalGetter(object):
         url = self.url
         data, status, headers = result
 
-        self.logger.debug("-"*40)
-        self.logger.debug("HEADERS: %s" % headers)
-        self.logger.info("Status: %s => %s" % (url, status))
-        self.logger.debug("CACHE: %s" % self.cache.get(url))
+        if self.logger:
+            self.logger.debug("-"*40)
+            self.logger.debug("HEADERS: %s" % headers)
+            self.logger.info("Status: %s => %s" % (url, status))
+            self.logger.debug("CACHE: %s" % self.cache.get(url))
  
         nextRequestHeaders = {}
         eTag = headers.get("etag")
@@ -416,13 +429,15 @@ class RSSConditionalGetter(object):
                     headers.get('If-Modified-Since')
 
         self.cache[url] = nextRequestHeaders
-        self.logger.debug("NEXT HEADERS: %s" % nextRequestHeaders)
-        self.logger.debug("-"*40)
+        if self.logger:
+            self.logger.debug("NEXT HEADERS: %s" % nextRequestHeaders)
+            self.logger.debug("-"*40)
         return data
 
     def handleError(self, failure):
         """Error handler triggered when response code is not 200 or 304."""
-        self.logger.debug("Error %s: " % failure.getErrorMessage())
+        if self.logger:
+            self.logger.error("Error %s: " % failure.getErrorMessage())
 
     def get_rss(self):
         deferred = self.deferred
