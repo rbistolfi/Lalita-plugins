@@ -55,7 +55,7 @@ class Rss(Plugin):
         self.to_announce = [ (channel, alias, RSSConditionalGetter(url,
             self.logger)) for channel, alias, url in feeds ]
         announce = task.LoopingCall(self.announce)
-        announce.start(60.0, now=False) # call every X seconds
+        announce.start(1800.0, now=False) # call every X seconds
 
     ##
     ## Comands
@@ -115,7 +115,8 @@ class Rss(Plugin):
                     user)
         else:
             self.db.add_feed(channel, alias, url)
-            self.to_announce.append(RSSConditionalGetter(url, self.logger))
+            self.to_announce.append((channel, alias, RSSConditionalGetter(url,
+                self.logger)))
             self.say(channel, u'%s: RSS feed added to the database.', user)
 
     def delete(self, user, channel, command, *args):
@@ -186,10 +187,6 @@ class Rss(Plugin):
     def get(self, url):
         """Get the contents of url."""
         return client.getPage(str(url))
-
-    def conditional_get(self, url):
-        """Get the contents of url only if contents changed since last visit."""
-        pass
 
     def feed_parser(self, feed):
         """Parse RSS feed."""
