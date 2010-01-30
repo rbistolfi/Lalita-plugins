@@ -2,9 +2,6 @@
 
 u'''A RSS reader for the Lalita IRC bot.'''
 
-#TODO: Remember what entries have been announced already
-
-
 from __future__ import with_statement
 
 __author__ = 'rbistolfi'
@@ -114,11 +111,13 @@ class Rss(Plugin):
         if not url.startswith(u'http'):
             self.say(channel, u'%s: Second argument should be an url.', 
                     user)
+            return 0
         else:
             self.db.add_feed(channel, alias, url)
             self.to_announce.append((channel, alias, RSSConditionalGetter(url,
                 self.logger)))
             self.say(channel, u'%s: RSS feed added to the database.', user)
+            return 1
 
     def delete(self, user, channel, command, *args):
         """Remove a RSS from the database."""
@@ -418,16 +417,15 @@ class RSSConditionalGetter(object):
             self.logger.debug("CACHE: %s" % self.cache.get(url))
  
         nextRequestHeaders = {}
-        eTag = headers.get("etag")
-        if eTag:
-            nextRequestHeaders['If-None-Match'] = eTag[0]
-        else:
+        if 'etag' in headers:
+            nextRequestHeaders['If-None-Match'] = headers.get('etag')
+        elif 'If-None-Match' in headers:
             nextRequestHeaders['If-None-Match'] = headers.get('If-None-Match')
 
-        modified = headers.get('last-modified')
-        if modified:
-            nextRequestHeaders['If-Modified-Since'] = modified[0]
-        else:
+        if 'last-modified' in headers:
+            nextRequestHeaders['If-Modified-Since'] = \
+                    headers.get('last-modified')
+        elif 'If-Modified-Since' in headers:
             nextRequestHeaders['If-Modified-Since'] = \
                     headers.get('If-Modified-Since')
 
