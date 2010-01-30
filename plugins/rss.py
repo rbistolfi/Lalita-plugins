@@ -52,7 +52,7 @@ class Rss(Plugin):
         self.to_announce = [ (channel, alias, RSSConditionalGetter(url,
             self.logger)) for channel, alias, url in feeds ]
         announce = task.LoopingCall(self.announce)
-        announce.start(1800.0, now=False) # call every X seconds
+        announce.start(50.0, now=False) # call every X seconds
 
     ##
     ## Comands
@@ -180,8 +180,9 @@ class Rss(Plugin):
                 instance.db.add_entry(feed_alias, dash)
                 filtered.append(item)
             except IntegrityError:
-                instance.logger.debug("Skiping %s, already announced." %
-                        (item,))
+                #instance.logger.debug("Skiping %s, already announced." %
+                #        (item,))
+                pass
         return filtered
 
     ##
@@ -418,13 +419,14 @@ class RSSConditionalGetter(object):
  
         nextRequestHeaders = {}
         if 'etag' in headers:
-            nextRequestHeaders['If-None-Match'] = headers.get('etag')
+            nextRequestHeaders['If-None-Match'] = headers.get('etag')[0]
         elif 'If-None-Match' in headers:
-            nextRequestHeaders['If-None-Match'] = headers.get('If-None-Match')
+            nextRequestHeaders['If-None-Match'] = \
+                    headers.get('If-None-Match')
 
         if 'last-modified' in headers:
             nextRequestHeaders['If-Modified-Since'] = \
-                    headers.get('last-modified')
+                    headers.get('last-modified')[0]
         elif 'If-Modified-Since' in headers:
             nextRequestHeaders['If-Modified-Since'] = \
                     headers.get('If-Modified-Since')
