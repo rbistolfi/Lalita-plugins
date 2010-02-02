@@ -18,6 +18,11 @@ from twisted.internet import task, defer, reactor
 
 from lalita import Plugin
 
+#TODO: Refactor loops in Rss.feed_parser, Rss.feed_parser_error
+#TODO: Translation table
+#TODO: Make tinyurl non-blocking
+#TODO: Twisted selector for tinyurl option
+
 TIMEOUT = 30
 TRANSLATION_TABLE = {}
 
@@ -38,9 +43,8 @@ class Rss(Plugin):
 
         self.messages = []
 
-        # TODO: get data from config file
+        # TODO: get data from config
         # config
-        self.max = 3
         self.use_tinyurl = False # set it to True for blocking the process ;)
 
         # database
@@ -52,7 +56,7 @@ class Rss(Plugin):
         self.to_announce = [ (channel, alias, RSSConditionalGetter(url,
             self.logger)) for channel, alias, url in feeds ]
         announce = task.LoopingCall(self.announce)
-        announce.start(50.0, now=False) # call every X seconds
+        announce.start(1800.0, now=False) # call every X seconds
 
     ##
     ## Comands
@@ -244,7 +248,7 @@ class Rss(Plugin):
 
 
 class SQLiteConnection(object):
-    """A connection handler SQLite database."""
+    """A connection handler for SQLite."""
 
     def __init__(self, dbfile):
         """Initialize connection arguments."""
